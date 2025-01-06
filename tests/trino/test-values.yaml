@@ -3,6 +3,7 @@
 # Declare variables to be passed into your templates.
 
 server:
+  workers: 2
   config:
     https:
       enabled: true
@@ -12,6 +13,8 @@ server:
   coordinatorExtraConfig: |
     query.client.timeout=5m
     query.execution-policy=phased
+  autoscaling:
+    enabled: true
 
 additionalConfigProperties:
   - internal-communication.shared-secret=random-value-999
@@ -21,6 +24,7 @@ additionalConfigProperties:
 service:
   annotations:
     custom/name: value
+  port: 8080
 
 auth:
   # created using htpasswd -B -C 10 password.db admin
@@ -41,6 +45,17 @@ secretMounts:
     path: /etc/trino/certificates
 
 coordinator:
+  deployment:
+    annotations:
+      custom/name: value
+    progressDeadlineSeconds: 500
+    revisionHistoryLimit: 5
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 50%
+
   jvm:
     maxHeapSize: "8G"
     gcMethod:
@@ -69,7 +84,21 @@ coordinator:
       port: 8443
       protocol: TCP
 
+  annotations:
+    custom/name: value
+
 worker:
+  deployment:
+    annotations:
+      custom/name: value
+    progressDeadlineSeconds: 500
+    revisionHistoryLimit: 5
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 50%
+
   jvm:
     maxHeapSize: "8G"
     gcMethod:
@@ -81,6 +110,9 @@ worker:
       heapHeadroomPerNode: "2GB"
     query:
       maxMemoryPerNode: "2GB"
+
+  annotations:
+    custom/name: value
 
 commonLabels:
   extra-label: extra-value
@@ -140,25 +172,85 @@ accessControl:
         ]
       }
 
+resourceGroups:
+  type: configmap
+  resourceGroupsConfig: |-
+    {
+      "rootGroups": [
+        {
+          "name": "global",
+          "softMemoryLimit": "80%",
+          "hardConcurrencyLimit": 100,
+          "maxQueued": 100,
+          "schedulingPolicy": "fair",
+          "jmxExport": true,
+          "subGroups": [
+            {
+              "name": "admin",
+              "softMemoryLimit": "30%",
+              "hardConcurrencyLimit": 20,
+              "maxQueued": 10
+            },
+            {
+              "name": "finance_human_resources",
+              "softMemoryLimit": "20%",
+              "hardConcurrencyLimit": 15,
+              "maxQueued": 10
+            },
+            {
+              "name": "general",
+              "softMemoryLimit": "30%",
+              "hardConcurrencyLimit": 20,
+              "maxQueued": 10
+            },
+            {
+              "name": "readonly",
+              "softMemoryLimit": "10%",
+              "hardConcurrencyLimit": 5,
+              "maxQueued": 5
+            }
+          ]
+        }
+      ],
+      "selectors": [
+        {
+          "user": "admin",
+          "group": "global.admin"
+        },
+        {
+          "group": "finance|human_resources",
+          "group": "global.finance_human_resources"
+        },
+        {
+          "user": "alice",
+          "group": "global.readonly"
+        },
+        {
+          "group": "global.general"
+        }
+      ]
+    }
+
+
 jmx:
   enabled: true
   registryPort: 9080
   serverPort: 9081
   exporter:
     enabled: true
-    image: bitnami/jmx-exporter:latest
+    image: bitnami/jmx-exporter:1.0.1
     pullPolicy: Always
     port: 5556
     configProperties: |
       startDelaySeconds: 0
-      hostPort: 127.0.0.1:9080
+      hostPort: 127.0.0.1:{{- .Values.jmx.registryPort }}
       rules:
         - pattern: 'trino.memory*'
         - pattern: 'trino.execution<name=QueryManager>*'
 
 serviceMonitor:
   enabled: true
-  selector:
+  labels:
     prometheus: default
   interval: "30s"
 
@@ -169,3 +261,13 @@ ingress:
       paths:
         - path: /
           pathType: ImplementationSpecific
+
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: test
+                operator: NotIn
+                values: [network-policy]
